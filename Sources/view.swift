@@ -2,10 +2,18 @@ import SwiftUI
 import Foundation
 import plate
 
-struct ChatMessage: Identifiable {
-    let id = UUID()
+struct ChatMessage: Identifiable, Codable {
+    let id: UUID
     let role: String // "user" or "assistant"
     var content: String
+    let timestamp: Date
+
+    init(id: UUID = UUID(), role: String, content: String, timestamp: Date = Date()) {
+        self.id = id
+        self.role = role
+        self.content = content
+        self.timestamp = timestamp
+    }
 }
 
 func apiURLString(_ domain: String,_ endpoint: APIEndpoint) -> String {
@@ -75,11 +83,17 @@ struct ChatView: View {
                         HStack {
                             if message.role == "user" {
                                 Spacer()
+
+                                Text(message.timestamp, style: .time)
+                                    .font(.caption2)
+                                    .foregroundColor(.gray)
+
                                 Text(message.content)
                                     .padding()
                                     .background(Color.blue.opacity(0.1))
                                     .cornerRadius(10)
                                     .textSelection(.enabled)
+
                                 Button(action: {
                                     copyToClipboard(message.content)
                                 }) {
@@ -92,6 +106,10 @@ struct ChatView: View {
                                 .buttonStyle(PlainButtonStyle())
                             } else {
                                 VStack {
+                                    Text(message.timestamp, style: .time)
+                                        .font(.caption2)
+                                        .foregroundColor(.gray)
+
                                     if parseMarkdown {
                                         let options = AttributedString.MarkdownParsingOptions(
                                             allowsExtendedAttributes: false,
@@ -195,6 +213,8 @@ struct ChatView: View {
                                 .foregroundColor(.gray)
                                 .padding(.vertical, 10)
                                 .padding(.horizontal, 14)
+                                .padding(.top, 6)
+                                .padding(.leading, 8)
                         }
 
                     }
@@ -212,16 +232,16 @@ struct ChatView: View {
                 }
                 .padding()
 
-                HStack {
+                HStack(spacing: 12) {
                     Toggle("Auto-Scroll", isOn: $autoScroll)
                     .toggleStyle(.switch)
 
                     Toggle("Parse Markdown", isOn: $parseMarkdown)
                     .toggleStyle(.switch)
                 }
-                .padding()
+                .padding(.top, 4)
 
-                HStack {
+                HStack(spacing: 12) {
                     Picker("precontext", selection: $precontext) {
                         ForEach(Precontext.allCases, id: \.self) { option in
                             Text(option.rawValue).tag(option)
@@ -239,7 +259,7 @@ struct ChatView: View {
                         fetchPrecontextByKey()
                     }
                 }
-                .padding()
+                .padding(.top, 4)
 
                 HStack(spacing: 12) {
                     TextField("chat-title.json", text: $chatFile)
@@ -268,17 +288,19 @@ struct ChatView: View {
                     }
                     .buttonStyle(.bordered)
                 }
-                .padding()
-
+                .padding(.top, 4)
+                .padding(.bottom, 4)
             }
 
             Divider()
 
             HStack {
-                Text("apikey: \(debug)")
-                Button("Test") {
-                    test()
-                }
+                Text("apikey:")
+                    .foregroundStyle(.gray)
+                Text("\(debug)")
+                // Button("Test") {
+                //     test()
+                // }
             }
             .padding()
         }
@@ -601,9 +623,10 @@ struct ChatView: View {
     func saveChatHistory(_ filename: String) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .prettyPrinted
+        encoder.dateEncodingStrategy = .iso8601
 
         do {
-            let data = try encoder.encode(chatHistory.map { ["role": $0.role, "content": $0.content] })
+            let data = try encoder.encode(chatHistory)
             let url = getChatHistoryURL(filename)
             try data.write(to: url)
             print("Chat saved to: \(url.path)")
@@ -613,26 +636,31 @@ struct ChatView: View {
     }
 
     func loadChatHistory(_ filename: String) {
-        // let url = getChatHistoryURL(filename)
-        // do {
-        //     let data = try Data(contentsOf: url)
-        //     let decoded = try JSONSerialization.jsonObject(with: data, options: []) as? [[String: String]]
-        //     let messages = decoded?.compactMap { dict in
-        //         if let role = dict["role"], let content = dict["content"] {
-        //             return ChatMessage(role: role, content: content)
-        //         }
-        //         return nil
-        //     } ?? []
-        //     chatHistory = messages
-        //     scrollToBottomTrigger = UUID()
-        //     print("Loaded chat with \(messages.count) messages.")
-        // } catch {
-        //     print("Failed to load chat history: \(error.localizedDescription)")
-        // }
+        let url = getChatHistoryURL(filename)
+        do {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let messages = try decoder.decode([ChatMessage].self, from: data)
+            chatHistory = messages
+            scrollToBottomTrigger = UUID()
+            print("Loaded chat with \(messages.count) messages.")
+        } catch {
+            print("Failed to load chat history: \(error.localizedDescription)")
+        }
     }
 
     func getChatHistoryURL(_ filename: String) -> URL {
         let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Modeler")
+
+        if !FileManager.default.fileExists(atPath: directory.path) {
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
+            } catch {
+                print("Failed to create directory: \(error.localizedDescription)")
+            }
+        }
         return directory.appendingPathComponent(filename)
     }
 
