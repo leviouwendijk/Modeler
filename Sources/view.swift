@@ -8,22 +8,25 @@ struct ChatMessage: Identifiable {
     var content: String
 }
 
-enum Endpoint: String {
-    case chat
-    case models
-}
-
-func apiURLString(_ domain: String,_ endpoint: Endpoint = .chat) -> String {
+func apiURLString(_ domain: String,_ endpoint: APIEndpoint) -> String {
     let apiConfig: plate.APIConfiguration = APIConfiguration(
         domain: domain,
         apiName: "modeler",
         version: APIVersion(version: 1),
         endpoints: [
             APIEndpoint(route: "ollama", endpoint: "chat", details: "basic chat"),
-            APIEndpoint(route: "ollama", endpoint: "models", details: "models")
+            APIEndpoint(route: "ollama", endpoint: "models", details: "models"),
+            APIEndpoint(route: "precontext", endpoint: "chat", details: "chat with precontext intialized"),
         ]
     )
-    return apiConfig.endpoint(endpoint.rawValue)
+    return apiConfig.endpoint(endpoint.route, endpoint.endpoint)
+}
+
+enum Precontext: String, CaseIterable {
+    case clientResponder
+    case clientResponder2
+    case development
+    case hondenmeesters
 }
 
 struct ChatView: View {
@@ -44,6 +47,8 @@ struct ChatView: View {
     @FocusState private var inputIsFocused: Bool
 
     @State private var activeStream: NetworkRequestStream?
+    
+    @State private var precontext: Precontext = Precontext.clientResponder
 
     var body: some View {
         VStack {
@@ -169,6 +174,15 @@ struct ChatView: View {
                 .padding()
 
                 HStack {
+                    Picker("precontext", selection: $precontext) {
+                        ForEach(Precontext.allCases, id: \.self) { option in
+                            Text(option.rawValue).tag(option)
+                        }
+                    }
+                    .frame(width: 250)
+                    .pickerStyle(MenuPickerStyle())
+                    .padding()
+
                     Toggle("Auto-Scroll", isOn: $autoScroll)
                     .toggleStyle(.switch)
 
@@ -201,7 +215,11 @@ struct ChatView: View {
             apikey = processEnvironment("MODELER_API_KEY")
             debug = obscure(apikey)
             domain = processEnvironment("MODELER_DOMAIN")
-            apiURL = apiURLString(domain)
+
+            let basicChat = APIEndpoint(route: "ollama", endpoint: "chat")
+            let precontextChat = APIEndpoint(route: "precontext", endpoint: "chat")
+
+            apiURL = apiURLString(domain, precontextChat)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -332,6 +350,7 @@ struct ChatView: View {
         let messagesPayload = chatHistory.map { ["role": $0.role, "content": $0.content] }
         let bodyDict: [String: Any] = [
             "model": model,
+            "precontext": precontext.rawValue,
             "messages": messagesPayload,
             "stream": stream
         ]

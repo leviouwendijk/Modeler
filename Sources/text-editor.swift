@@ -62,3 +62,55 @@ struct PromptTextEditor: NSViewRepresentable {
         }
     }
 }
+
+struct OptionTextEditor: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeNSView(context: Context) -> NSTextView {
+        let textView = NSTextView()
+        textView.wantsLayer = true
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.drawsBackground = false
+        textView.font = .systemFont(ofSize: 14)
+        textView.textColor = .labelColor
+        textView.isRichText = false
+        textView.usesRuler = false
+        textView.usesFontPanel = false
+        textView.string = text
+        textView.delegate = context.coordinator
+        textView.focusRingType = .none 
+        // textView.backgroundColor = .clear
+        textView.appearance = NSApp.effectiveAppearance
+
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainerInset = NSSize(width: 5, height: 8)
+
+        return textView
+    }
+
+    func updateNSView(_ nsView: NSTextView, context: Context) {
+        if nsView.string != text {
+            nsView.string = text
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator($text)
+    }
+
+    class Coordinator: NSObject, NSTextViewDelegate {
+        var text: Binding<String>
+        init(_ text: Binding<String>) {
+            self.text = text
+        }
+
+        func textDidChange(_ notification: Notification) {
+            if let textView = notification.object as? NSTextView {
+                text.wrappedValue = textView.string
+            }
+        }
+    }
+}
