@@ -26,7 +26,15 @@ enum Precontext: String, CaseIterable {
     case clientResponder
     case clientResponder2
     case development
+    case communications
+    case genericMessageHelper
     case hondenmeesters
+    case accountingLibrary
+}
+
+enum Model: String, RawRepresentable {
+    case gemma3_1b = "gemma3:1b"
+    case qwen2_5_7b = "qwen2.5:7b"
 }
 
 struct ChatView: View {
@@ -35,25 +43,33 @@ struct ChatView: View {
     @State private var isLoading = false
     @State private var alertMessage = ""
 
+    @State private var model = Model.gemma3_1b
     @State private var domain = ""
     @State private var apiURL = ""
     @State private var apikey = ""
     @State private var debug = ""
+    @State private var chatFile = ""
 
     @State private var pendingBotMessage: ChatMessage? = nil
-    @State private var autoScroll: Bool = false
+    @State private var autoScroll: Bool = true
     @State private var parseMarkdown: Bool = true
 
     @FocusState private var inputIsFocused: Bool
 
     @State private var activeStream: NetworkRequestStream?
     
-    @State private var precontext: Precontext = Precontext.clientResponder
+    @State private var precontext: Precontext = Precontext.hondenmeesters
+
+    @State private var scrollToBottomTrigger = UUID()
+
+    @State private var showClearConfirmation = false
+    @State private var showOverwriteConfirmation = false
+    @State private var showLoadConfirmation = false
 
     var body: some View {
         VStack {
 
-            // ScrollViewReader { proxy in
+            ScrollViewReader { proxy in
                 ScrollView {
                     ForEach(chatHistory) { message in
                         HStack {
@@ -129,15 +145,38 @@ struct ChatView: View {
                         .padding(.horizontal)
                         .padding(.vertical, 4)
                     }
+                    Color.clear.frame(height: 1).id("bottom")
                 }
-                // .onChange(of: chatHistory) { _ in
-                //     if autoScroll, let last = chatHistory.last {
-                //         withAnimation {
-                //             proxy.scrollTo(last.id, anchor: .bottom)
-                //         }
-                //     }
-                // }
-            // }
+                .onChange(of: scrollToBottomTrigger) { oldValue, newValue in
+                    if autoScroll {
+                        withAnimation {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    }
+                }
+
+                if !autoScroll && !chatHistory.isEmpty {
+                    Button(action: {
+                        withAnimation {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    }) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .foregroundColor(.primary)
+
+                            Text("Scroll to Bottom")
+                                .foregroundColor(.primary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.gray.opacity(0.2))
+                        .cornerRadius(8)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .padding(.bottom, 8)
+                }
+            }
 
             Divider()
 
@@ -174,6 +213,15 @@ struct ChatView: View {
                 .padding()
 
                 HStack {
+                    Toggle("Auto-Scroll", isOn: $autoScroll)
+                    .toggleStyle(.switch)
+
+                    Toggle("Parse Markdown", isOn: $parseMarkdown)
+                    .toggleStyle(.switch)
+                }
+                .padding()
+
+                HStack {
                     Picker("precontext", selection: $precontext) {
                         ForEach(Precontext.allCases, id: \.self) { option in
                             Text(option.rawValue).tag(option)
@@ -183,13 +231,45 @@ struct ChatView: View {
                     .pickerStyle(MenuPickerStyle())
                     .padding()
 
-                    Toggle("Auto-Scroll", isOn: $autoScroll)
-                    .toggleStyle(.switch)
+                    Button("precontext list") {
+                        fetchPrecontextList()
+                    }
 
-                    Toggle("Parse Markdown", isOn: $parseMarkdown)
-                    .toggleStyle(.switch)
+                    Button("precontext current") {
+                        fetchPrecontextByKey()
+                    }
                 }
                 .padding()
+
+                HStack(spacing: 12) {
+                    TextField("chat-title.json", text: $chatFile)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 200)
+
+                    Button {
+                        confirmBeforeOverwritingOrSave()
+                    } label: {
+                        Label("Save", systemImage: "square.and.arrow.down")
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button {
+                        confirmBeforeClearingAndLoad()
+                    } label: {
+                        Label("Load", systemImage: "folder")
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button(role: .destructive) {
+                        confirmBeforeClear()
+                    } label: {
+                        Label("Clear", systemImage: "trash")
+                            .foregroundColor(.red)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding()
+
             }
 
             Divider()
@@ -216,10 +296,12 @@ struct ChatView: View {
             debug = obscure(apikey)
             domain = processEnvironment("MODELER_DOMAIN")
 
-            let basicChat = APIEndpoint(route: "ollama", endpoint: "chat")
+            // let basicChat = APIEndpoint(route: "ollama", endpoint: "chat")
             let precontextChat = APIEndpoint(route: "precontext", endpoint: "chat")
 
             apiURL = apiURLString(domain, precontextChat)
+
+            precontext = defaultPrecontext()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -228,6 +310,26 @@ struct ChatView: View {
                     return nil
                 }
                 return event
+            }
+        }
+        .alert("Clear current chat?", isPresented: $showClearConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Clear", role: .destructive) {
+                chatHistory.removeAll()
+            }
+        }
+
+        .alert("Overwrite existing file?", isPresented: $showOverwriteConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Overwrite", role: .destructive) {
+                saveChatHistory(chatFile)
+            }
+        }
+
+        .alert("Replace current chat with saved one?", isPresented: $showLoadConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Load", role: .destructive) {
+                loadChatHistory(chatFile)
             }
         }
     }
@@ -340,8 +442,7 @@ struct ChatView: View {
         // Capture the pending message's id.
         let pendingMessageID = pendingMessage.id
 
-        // Prepare request body.
-        let model = "gemma3:1b"
+        let model = model.rawValue
         let stream = true
         guard let url = URL(string: apiURL) else {
             print("Invalid URL")
@@ -383,6 +484,7 @@ struct ChatView: View {
                         DispatchQueue.main.async {
                             if let index = chatHistory.firstIndex(where: { $0.id == pendingMessageID }) {
                                 chatHistory[index].content += content
+                                scrollToBottomTrigger = UUID()
                             } else {
                                 print("Pending message not found")
                             }
@@ -411,6 +513,150 @@ struct ChatView: View {
         // Retain and start the stream.
         activeStream = streamRequest
         streamRequest.start()
+    }
+
+    func defaultPrecontext() -> Precontext {
+        let envPrecontext = processEnvironment("MODELER_DEFAULT_PRECONTEXT")
+        let precontext = Precontext(rawValue: envPrecontext) ?? Precontext.hondenmeesters
+        return precontext
+    }
+
+
+    func fetchPrecontextList() {
+        guard let url = URL(string: apiURLString(domain, APIEndpoint(route: "precontext", endpoint: "list"))) else {
+            print("Invalid /list URL")
+            return
+        }
+
+        let request = NetworkRequest(
+            url: url,
+            method: .get,
+            auth: .apikey(value: apikey),
+            headers: ["Content-Type": "application/json"],
+            log: true
+        )
+
+        request.execute { success, data, error in
+            if let error = error {
+                print("Error fetching precontext list:", error.localizedDescription)
+                return
+            }
+
+            if let data = data,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let contexts = json["contexts"] as? [[String: String]] {
+                var output = ""
+                output.append("Precontext list:\n\n")
+                for context in contexts {
+                    output.append("- \(context["name"] ?? "unknown"): \(context["preview"] ?? "...")")
+                    output.append("\n")
+                }
+
+                DispatchQueue.main.async {
+                    chatHistory.append(ChatMessage(role: "assistant", content: output))
+                }
+            } else {
+                print("Failed to parse precontext list.")
+            }
+        }
+    }
+
+    func fetchPrecontextByKey() {
+        let key = precontext.rawValue
+        guard let url = URL(string: apiURLString(domain, APIEndpoint(route: "precontext", endpoint: key))) else {
+            print("Invalid /:key URL")
+            return
+        }
+
+        let request = NetworkRequest(
+            url: url,
+            method: .get,
+            auth: .apikey(value: apikey),
+            headers: ["Content-Type": "application/json"],
+            log: true
+        )
+
+        request.execute { success, data, error in
+            if let error = error {
+                print("Error fetching context for \(key):", error.localizedDescription)
+                return
+            }
+
+            if let data = data,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let content = json["content"] as? String {
+
+                print("Context for \(key):\n\(content)")
+
+                DispatchQueue.main.async {
+                    chatHistory.append(ChatMessage(role: "assistant", content: content))
+                }
+
+            } else {
+                print("Failed to parse context for \(key).")
+            }
+        }
+    }
+
+    func saveChatHistory(_ filename: String) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+
+        do {
+            let data = try encoder.encode(chatHistory.map { ["role": $0.role, "content": $0.content] })
+            let url = getChatHistoryURL(filename)
+            try data.write(to: url)
+            print("Chat saved to: \(url.path)")
+        } catch {
+            print("Failed to save chat history: \(error)")
+        }
+    }
+
+    func loadChatHistory(_ filename: String) {
+        // let url = getChatHistoryURL(filename)
+        // do {
+        //     let data = try Data(contentsOf: url)
+        //     let decoded = try JSONSerialization.jsonObject(with: data, options: []) as? [[String: String]]
+        //     let messages = decoded?.compactMap { dict in
+        //         if let role = dict["role"], let content = dict["content"] {
+        //             return ChatMessage(role: role, content: content)
+        //         }
+        //         return nil
+        //     } ?? []
+        //     chatHistory = messages
+        //     scrollToBottomTrigger = UUID()
+        //     print("Loaded chat with \(messages.count) messages.")
+        // } catch {
+        //     print("Failed to load chat history: \(error.localizedDescription)")
+        // }
+    }
+
+    func getChatHistoryURL(_ filename: String) -> URL {
+        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        return directory.appendingPathComponent(filename)
+    }
+
+    private func confirmBeforeClear() {
+        if !chatHistory.isEmpty {
+            showClearConfirmation = true
+        }
+    }
+
+    private func confirmBeforeOverwritingOrSave() {
+        let fileExists = FileManager.default.fileExists(atPath: getChatHistoryURL(chatFile).path)
+        if fileExists {
+            showOverwriteConfirmation = true
+        } else {
+            saveChatHistory(chatFile)
+        }
+    }
+
+    private func confirmBeforeClearingAndLoad() {
+        if !chatHistory.isEmpty {
+            showLoadConfirmation = true
+        } else {
+            loadChatHistory(chatFile)
+        }
     }
 }
 
